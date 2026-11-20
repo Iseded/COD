@@ -19,9 +19,21 @@ var muzzle_point: Node3D
 var anim_player: AnimationPlayer
 var fire_cd := 0.0
 var dead := false
+var is_leg_wounded := false # враг ранен в ногу — будет хромать (скорость -50%)
 var _last_shot_from := Vector3.ZERO
 var _anim_names := {}
 var _cur_anim := ""
+
+## Вложенный мини-класс зоны урона (аналог отдельного Hitbox.gd,
+## чтобы не создавать новых файлов): навешивается на каждую Area3D
+## и хранит limb_name и damage_multiplier как обычные свойства.
+class _Hitbox extends Area3D:
+	var limb_name := "body"
+	var damage_multiplier := 1.0
+
+	func _init(limb: String, multiplier: float) -> void:
+		limb_name = limb
+		damage_multiplier = multiplier
 
 func _ready() -> void:
 	add_to_group("enemy")
@@ -36,10 +48,81 @@ func _ready() -> void:
 	cs.position.y = 0.9
 	add_child(cs)
 
+	_build_hitboxes() # система зон урона (хитбоксов) как в Bodycam / Ready or Not
+
 	_build_model()
 	_attach_weapon_to_hand()
 
 	fire_cd = randf_range(0.5, 1.4)
+
+## Создаёт три Area3D-зоны урона: голова, тело, ноги.
+## Каждая зона хранит limb_name и damage_multiplier; при попадании пули
+## (collision_layer = 8 — слой пуль) зона передаёт урон через take_damage.
+func _build_hitboxes() -> void:
+	_add_hitbox("head", Vector3(0, 1.6, 0), Vector3(0.4, 0.4, 0.4), 3.0)
+	_add_hitbox("body", Vector3(0, 1.0, 0), Vector3(0.6, 0.8, 0.4), 1.0)
+	_add_hitbox("legs", Vector3(0, 0.4, 0), Vector3(0.5, 0.8, 0.3), 0.5)
+
+## Вспомогательная функция создания одной зоны урона (Area3D + BoxShape3D).
+func _add_hitbox(limb: String, pos: Vector3, size: Vector3, multiplier: float) -> void:
+	var area := _Hitbox.new(limb, multiplier)
+	area.name = "Hitbox_" + limb.capitalize()
+	area.position = pos
+	# Зона не влияет на физику и не перекрывается телом врага:
+	# слой 4 отключён из маски, слой 8 (пули) — оставлен для future-proofing
+	area.collision_layer = 0
+	area.collision_mask = 8
+	area.monitorable = true
+	# Каждой зоне присвоены limb_name и damage_multiplier (свойства скрипта зоны + meta)
+	area.set_meta("limb_name", limb)
+	area.set_meta("damage_multiplier", multiplier)
+
+	var shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	shape.shape = box
+	area.add_child(shape)
+	add_child(area)
+
+	area.input_event.connect(_on_hitbox_input_event.bind(limb, multiplier))
+
+## Обработка попадания луча/мыши в зону урона (стандартный путь Area3D.input_event).
+func _on_hitbox_input_event(_camera: Node, event: InputEvent, _pos: Vector3, _normal: Vector3, _shape_idx: int, limb: String, multiplier: float) -> void:
+	if dead:
+		return
+	# Клик мышью по зоне — условный «выстрел» базовым уроном 25 с множителем зоны
+	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+		take_damage(ceili(25.0 * multiplier), limb)
+
+## Возвращает имя зоны урона ("head"/"body"/"legs"), содержащей мировую точку
+## hit_pos; если точка вне зон — определяет лимб по высоте (запасной вариант).
+func get_limb_at(hit_pos: Vector3) -> String:
+	var hb := _hitbox_at(hit_pos)
+	if hb != null:
+		return hb.limb_name
+	var local_y := (global_transform.affine_inverse() * hit_pos).y
+	if local_y > 1.4: return "head"
+	if local_y < 0.8: return "legs"
+	return "body"
+
+## Возвращает зону урона (унаследованную Area3D-скрипт _Hitbox), содержащую
+## мировую точку hit_pos, или null. Приоритет: голова > тело > ноги.
+func _hitbox_at(hit_pos: Vector3) -> _Hitbox:
+	for limb in ["head", "body", "legs"]:
+		var area := get_node_or_null("Hitbox_" + limb.capitalize()) as _Hitbox
+		if area == null:
+			continue
+		var shape_node := area.get_node_or_null(^"CollisionShape3D")
+		if shape_node == null:
+			continue
+		var box := shape_node.shape as BoxShape3D
+		if box == null or box.volume <= 0.0:
+			continue
+		# переводим точку в локальные координаты зоны и проверяем принадлежность боксу
+		var local := area.global_transform.affine_inverse() * hit_pos
+		if AABB(-box.size * 0.5, box.size).has_point(local):
+			return area
+	return null
 
 func _build_model() -> void:
 	if not ResourceLoader.exists(MODEL_PATH):
@@ -205,10 +288,14 @@ func _physics_process(delta: float) -> void:
 		var dist := to.length()
 		
 		if dist < SIGHT:
+			# Ранение в ногу — враг хромает: скорость передвижения уменьшена на 50%
+			var current_speed := speed
+			if is_leg_wounded:
+				current_speed = speed * 0.5
 			if dist > STOP_DIST:
 				var d := to.normalized()
-				velocity.x = d.x * speed
-				velocity.z = d.z * speed
+				velocity.x = d.x * current_speed
+				velocity.z = d.z * current_speed
 				moving = true
 			else:
 				velocity.x = 0.0
@@ -246,15 +333,34 @@ func _try_shoot(dist: float, delta: float) -> void:
 		player.take_damage(randi_range(7, 12))
 
 func is_headshot(hit_pos: Vector3) -> bool:
+	# Определяем зону урона по мировой точке попадания (хитбоксы Head/Body/Legs)
+	var hb := _hitbox_at(hit_pos)
+	if hb != null:
+		return hb.limb_name == "head"
+	# Запасная проверка по высоте, если точка не попала ни в одну зону
 	var local := global_transform.affine_inverse() * hit_pos
 	return local.y > 1.55
 
 func register_hit_from(pos: Vector3) -> void:
 	_last_shot_from = pos
 
-func take_damage(amount: int) -> void:
+## Нанесение урона с учётом зоны (лимба) попадания:
+## head — урон x3.0, legs — враг начинает хромать (is_leg_wounded = true).
+## amount может быть int или float (совместимость со старым вызовом из player.gd).
+func take_damage(amount, limb: String = "body") -> void:
 	if dead: return
-	health -= amount
+	var dmg := float(amount)
+	match limb:
+		"head":
+			dmg *= 3.0 # множитель урона головы
+		"legs":
+			is_leg_wounded = true # попадание в ногу — враг хромает (-50% скорости)
+		"body":
+			pass
+		_:
+			# неизвестная зона — урон без модификатора
+			push_warning("Enemy.take_damage: неизвестная зона '%s', урон без модификатора" % limb)
+	health -= int(round(dmg))
 	if health <= 0: _die()
 
 func _die() -> void:
