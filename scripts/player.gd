@@ -16,6 +16,13 @@ var health := 100
 var gravity := 18.0
 var alive := true
 
+# Механика кровотечения и регенерации (как в MW2)
+var is_bleeding := false
+var bleeding_damage := 2.0
+var time_since_last_damage := 0.0
+const REGEN_DELAY := 4.0 # секунд без урона до начала восстановления
+const REGEN_RATE := 6.0 # HP в секунду
+
 var camera: Camera3D
 var viewmodel: WeaponViewmodel
 var pitch := 0.0
@@ -94,6 +101,20 @@ func _process(delta: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	if not alive: return
+
+	# Кровотечение: постоянная потеря здоровья
+	time_since_last_damage += delta
+	if is_bleeding:
+		health = max(0, health - bleeding_damage * delta)
+		health_changed.emit(int(health), max_health)
+		if health <= 0:
+			_die()
+			return
+	# Регенерация (как в MW2): через 4 секунды без урона, если не истекаем кровью
+	elif time_since_last_damage >= REGEN_DELAY and health < max_health:
+		health = min(max_health, health + REGEN_RATE * delta)
+		health_changed.emit(int(health), max_health)
+
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 
@@ -198,13 +219,22 @@ func _shoot() -> void:
 			Effects.dust(get_parent(), hit_pos, hit_normal)
 			AudioFX.play_impact(hit_pos)
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, limb := "body") -> void:
 	if not alive: return
 	health = max(0, health - amount)
+	time_since_last_damage = 0.0
+	# Ранение ног: с вероятностью 50% игрок начинает истекать кровью
+	if limb == "legs" and randf() > 0.5:
+		is_bleeding = true
 	health_changed.emit(health, max_health)
 	VisualFX.flash_damage(0.85)
 	VisualFX.shake(1.4, 4.0)
 	if health <= 0:
-		alive = false
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		died.emit()
+		_die()
+
+func _die() -> void:
+	if not alive: return
+	alive = false
+	is_bleeding = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	died.emit()

@@ -70,27 +70,25 @@ func _process(delta: float) -> void:
 		camera.fov = lerp(camera.fov, target_fov, delta * 12.0)
 
 func _build_weapon(_i: int) -> void:
-	var path: String = weapons_data[0].path
-	
+	var path: String = weapons_data[_i].path if _i < weapons_data.size() else weapons_data[0].path
+
+	# Загрузка 3D-модели оружия вместо процедурных кубов
 	if ResourceLoader.exists(path):
 		var scene: PackedScene = load(path)
 		model_instance = scene.instantiate()
-		
-		# === НАСТРОЙКИ МОДЕЛИ АК-12 ===
-		# Если оружие огромное - поставь 0.1. Если маленькое - 1.0 или 2.0
-		model_instance.scale = Vector3(0.3, 0.3, 0.3) 
-		# Разворот стволом вперед
-		model_instance.rotation_degrees = Vector3(0, 180, 0) 
-		# Сдвиг, чтобы рукоять была внизу справа
-		model_instance.position = Vector3(0, -0.05, 0.1) 
-		
+		# Масштаб модели
+		model_instance.scale = Vector3(1, 1, 1)
+		# Разворот стволом вперёд (от камеры)
+		model_instance.rotation_degrees = Vector3(0, 180, 0)
 		add_child(model_instance)
 	else:
-		print("ОШИБКА: Не найден файл ", path)
+		push_error("ОШИБКА: Не найден файл модели %s" % path)
+		return
 
-	# Точка вылета пули (Muzzle)
+	# Узел Muzzle на конце ствола — точка вылета пули и вспышки
 	muzzle = Node3D.new()
-	muzzle.position = Vector3(0, 0.02, -0.5) # Подгони под длину ствола
+	muzzle.name = "Muzzle"
+	muzzle.position = _find_muzzle_position()
 	add_child(muzzle)
 
 	# Свет и спрайт вспышки
@@ -107,6 +105,27 @@ func _build_weapon(_i: int) -> void:
 	muzzle_sprite.visible = false
 	muzzle_sprite.no_depth_test = true
 	muzzle.add_child(muzzle_sprite)
+
+func _find_muzzle_position() -> Vector3:
+	# Автоматически находим конец ствола по границам (AABB) загруженной модели.
+	# Ствол направлен в -Z, поэтому берём самую дальнюю точку по оси Z.
+	if model_instance:
+		var mi := _find_mesh_instance(model_instance)
+		if mi:
+			var m_aabb: AABB = mi.global_transform * mi.aabb
+			var rel: AABB = global_transform.affine_inverse() * m_aabb
+			return Vector3(rel.position.x + rel.size.x * 0.5, rel.position.y + rel.size.y * 0.5, rel.position.z)
+	# Запасная позиция, если границы не удалось вычислить
+	return Vector3(0, 0.02, -0.4)
+
+func _find_mesh_instance(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D:
+		return node as MeshInstance3D
+	for child in node.get_children():
+		var res := _find_mesh_instance(child)
+		if res:
+			return res
+	return null
 
 func _flash_texture() -> ImageTexture:
 	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
