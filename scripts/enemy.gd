@@ -239,10 +239,15 @@ func _find_muzzle_offset(weapon: Node3D) -> Vector3:
 	var aabb_total := AABB()
 	var found := false
 	for mi in weapon.find_children("*", "MeshInstance3D", true, false):
-		var m := mi as MeshInstance3D
-		if m.mesh == null:
+		# Защита: узел должен быть именно MeshInstance3D и иметь загруженный меш,
+		# иначе игра вылетит при обращении к get_aabb() на недогруженной модели.
+		if not (mi is MeshInstance3D):
 			continue
-		var local_aabb: AABB = m.transform * m.aabb
+		var m := mi as MeshInstance3D
+		if m == null or m.mesh == null:
+			continue
+		# В Godot 4 у MeshInstance3D нет свойства .aabb — только метод get_aabb().
+		var local_aabb: AABB = m.transform * m.get_aabb()
 		if not found:
 			aabb_total = local_aabb
 			found = true
