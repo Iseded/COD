@@ -242,7 +242,7 @@ func _find_muzzle_offset(weapon: Node3D) -> Vector3:
 		var m := mi as MeshInstance3D
 		if m.mesh == null:
 			continue
-		var local_aabb := m.transform * m.aabb
+		var local_aabb: AABB = m.transform * m.aabb
 		if not found:
 			aabb_total = local_aabb
 			found = true
