@@ -219,6 +219,35 @@ func _shoot() -> void:
 			Effects.dust(get_parent(), hit_pos, hit_normal)
 			AudioFX.play_impact(hit_pos)
 
+	# Механика подавления (suppression): если луч не попал во врага напрямую,
+	# но пролетел рядом с ним (враг в радиусе 2 м от линии огня) — враг
+	# «прижимается к укрытию»: Enemy.get_suppressed().
+	_apply_suppression(from, dir)
+
+## Радиус подавления: расстояние от линии выстрела до врага, при котором
+## враг считается подавленным и прячется.
+const SUPPRESSION_RADIUS := 2.0
+
+## Ищет ближайшего к линии выстрела живого врага и вызывает у него
+## get_suppressed(), если дистанция от луча до врага <= SUPPRESSION_RADIUS.
+func _apply_suppression(shot_from: Vector3, shot_dir: Vector3) -> void:
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if not (e is Node3D):
+			continue
+		if not e.has_method("get_suppressed"):
+			continue
+		if e.get("dead") == true:
+			continue
+		# Проекция вектора «начало луча -> враг» на направление полёта пули
+		var to_enemy: Vector3 = (e as Node3D).global_position - shot_from
+		var along := to_enemy.dot(shot_dir)
+		if along < 0.0 or along > 200.0:
+			continue # враг позади стрелка или дальше дальности полёта пули
+		# Кратчайшее расстояние от линии огня до позиции врага
+		var perp := (to_enemy - shot_dir * along).length()
+		if perp <= SUPPRESSION_RADIUS:
+			e.get_suppressed()
+
 func take_damage(amount: int, limb := "body") -> void:
 	if not alive: return
 	health = max(0, health - amount)

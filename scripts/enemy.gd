@@ -20,6 +20,14 @@ var anim_player: AnimationPlayer
 var fire_cd := 0.0
 var dead := false
 var is_leg_wounded := false # враг ранен в ногу — будет хромать (скорость -50%)
+
+## Машина состояний врага.
+enum State { CHASE, ATTACK, COVER, RELOAD }
+
+## Текущее состояние машины состояний.
+var state: State = State.CHASE
+## Таймер подавления: пока > 0, враг прячется (State.COVER) и не стреляет.
+var suppressed_timer := 0.0
 var _last_shot_from := Vector3.ZERO
 var _anim_names := {}
 var _cur_anim := ""
@@ -231,10 +239,15 @@ func _find_muzzle_offset(weapon: Node3D) -> Vector3:
 	var aabb_total := AABB()
 	var found := false
 	for mi in weapon.find_children("*", "MeshInstance3D", true, false):
-		var m := mi as MeshInstance3D
-		if m.mesh == null:
+		# Защита: узел должен быть именно MeshInstance3D и иметь загруженный меш,
+		# иначе игра вылетит при обращении к get_aabb() на недогруженной модели.
+		if not (mi is MeshInstance3D):
 			continue
-		var local_aabb := m.transform * m.aabb
+		var m := mi as MeshInstance3D
+		if m == null or m.mesh == null:
+			continue
+		# В Godot 4 у MeshInstance3D нет свойства .aabb — только метод get_aabb().
+		var local_aabb: AABB = m.transform * m.get_aabb()
 		if not found:
 			aabb_total = local_aabb
 			found = true
@@ -275,6 +288,16 @@ func _update_locomotion_animation(is_moving: bool) -> void:
 func _physics_process(delta: float) -> void:
 	if dead: return
 
+	# Подавление (suppression): пули пролетели рядом с врагом — он прячется
+	# в укрытие и НЕ стреляет, пока таймер не истечёт.
+	if suppressed_timer > 0.0:
+		suppressed_timer -= delta
+		if suppressed_timer <= 0.0:
+			suppressed_timer = 0.0
+			# Подавление закончилось — возвращаемся к обычному поведению
+			if state == State.COVER:
+				state = State.CHASE
+
 	if player == null or not is_instance_valid(player):
 		player = get_tree().get_first_node_in_group("player")
 
@@ -301,7 +324,9 @@ func _physics_process(delta: float) -> void:
 				velocity.x = 0.0
 				velocity.z = 0.0
 			rotation.y = lerp_angle(rotation.y, atan2(-to.x, -to.z), delta * 6.0)
-			_try_shoot(dist, delta)
+			# Пока враг подавлен (suppressed_timer > 0) — стрельба заблокирована
+			if suppressed_timer <= 0.0:
+				_try_shoot(dist, delta)
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -343,6 +368,15 @@ func is_headshot(hit_pos: Vector3) -> bool:
 
 func register_hit_from(pos: Vector3) -> void:
 	_last_shot_from = pos
+
+## Механика подавления (suppression): вызывается, когда пули игрока пролетают
+## рядом с врагом. Враг прячется в укрытие на 3 секунды и не стреляет всё это
+## время; состояние принудительно переключается на State.COVER.
+func get_suppressed() -> void:
+	if dead:
+		return
+	suppressed_timer = 3.0
+	state = State.COVER
 
 ## Нанесение урона с учётом зоны (лимба) попадания:
 ## head — урон x3.0, legs — враг начинает хромать (is_leg_wounded = true).
