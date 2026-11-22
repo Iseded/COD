@@ -2,9 +2,11 @@ extends Node
 
 enum State { MENU, PLAYING, PAUSED, OVER }
 
+const TEST_MAP_SCRIPT := "res://scripts/TestMap.gd"
+
 var state: State = State.MENU
 var world: Node3D
-var level: Level
+var level: Node3D # тестовая карта TestMap (или Level) — сигналы совпадают
 var player: Player
 var hud: HUD
 var menu: CanvasLayer
@@ -147,13 +149,14 @@ func start_mission(index: int) -> void:
 	world = Node3D.new()
 	add_child(world)
 
-	level = Level.new()
-	world.add_child(level)
-	level.build(Game.MISSIONS[index])
+	# Тестовая карта вместо старой генерации арены: навмеш, укрытия,
+	# разрушаемые стены, спавн врагов, свет и туман.
+	level = load(TEST_MAP_SCRIPT).new()
+	level.build(world)
 
 	player = Player.new()
 	world.add_child(player)
-	player.global_position = level.player_spawn
+	player.global_position = Vector3(0, 1, 20)
 
 	hud = HUD.new()
 	add_child(hud)
